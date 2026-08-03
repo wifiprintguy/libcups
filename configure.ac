@@ -172,13 +172,21 @@ AS_IF([$PKGCONFIG --exists pdfio --atleast-version=1.2], [
     AC_MSG_RESULT([yes])
     CPPFLAGS="$CPPFLAGS $($PKGCONFIG --cflags pdfio)"
     PDFIODIR=""
-    XFORMLIBS="$($PKGCONFIG --libs pdfio) $XFORMLIBS"
+    pdfio_libs="$($PKGCONFIG --libs pdfio)"
+    for pdfio_flag in -lz -lm; do
+        pdfio_libs="$(echo "$pdfio_libs" | sed -e "s/ $pdfio_flag / /g" -e "s/^$pdfio_flag //g" -e "s/ $pdfio_flag\$//g")"
+    done
+    XFORMLIBS="$pdfio_libs $XFORMLIBS"
 ], [
     # Use embedded PDFio library...
     AC_MSG_RESULT([no, using embedded version])
     CPPFLAGS="$CPPFLAGS -I../pdfio"
     PDFIODIR="pdfio"
-    XFORMLIBS="-L../pdfio \`PKG_CONFIG_PATH=../pdfio $PKGCONFIG --libs pdfio\`  $XFORMLIBS"
+    pdfio_libs="$(PKG_CONFIG_PATH=../pdfio $PKGCONFIG --libs pdfio)"
+    for pdfio_flag in -lz -lm; do
+        pdfio_libs="$(echo "$pdfio_libs" | sed -e "s/ $pdfio_flag / /g" -e "s/^$pdfio_flag //g" -e "s/ $pdfio_flag\$//g")"
+    done
+    XFORMLIBS="-L../pdfio $pdfio_libs $XFORMLIBS"
     AC_CONFIG_SUBDIRS([pdfio])
 ])
 AC_SUBST([PDFIODIR])

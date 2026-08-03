@@ -97,9 +97,19 @@ WARNINGS	=	@WARNINGS@
 #
 
 DSOFLAGS	=	@DSOFLAGS@
-XFORMLIBS	=	@XFORMLIBS@
+XFORMLIBS	=	$(filter-out -lz -lm, @XFORMLIBS@)
 LDFLAGS		=	@LDFLAGS@
 LIBS		=	@LIBS@ -lm
+
+#
+# Optional flags for static-linking workflows such as Homebrew static
+# archives on macOS.
+#
+
+STATIC_CPPFLAGS	?=
+STATIC_LDFLAGS	?=
+STATIC_LIBS	?=
+STATIC_LINK_LIBS	= $(strip $(if $(STATIC_LIBS),$(STATIC_LIBS) $(filter-out $(STATIC_LIBS),$(LIBS)),$(LIBS)))
 
 
 #
@@ -171,4 +181,4 @@ BUILDROOT	=	$(DSTROOT)$(DESTDIR)
 
 .c.o:
 	echo Compiling $<...
-	$(CC) -I.. -D_CUPS_SOURCE $(CPPFLAGS) $(OPTIONS) $(CFLAGS) $(OPTIM) $(WARNINGS) -c -o $@ $<
+	$(CC) -I.. -D_CUPS_SOURCE $(CPPFLAGS) $(STATIC_CPPFLAGS) $(OPTIONS) $(CFLAGS) $(OPTIM) $(WARNINGS) -c -o $@ $<

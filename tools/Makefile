@@ -162,7 +162,7 @@ ippeveprinter:	ippeveprinter.o ../cups/$(LIBCUPS) ippeveprinter-static
 
 ippeveprinter-static:	ippeveprinter.o ../cups/$(LIBCUPS_STATIC)
 	echo Linking $@...
-	$(CC) $(LDFLAGS) $(OPTIM) -o $@ ippeveprinter.o $(PAMLIBS) ../cups/$(LIBCUPS_STATIC) $(LIBS)
+	$(CC) $(STATIC_LDFLAGS) $(LDFLAGS) $(OPTIM) -o $@ ippeveprinter.o $(PAMLIBS) ../cups/$(LIBCUPS_STATIC) $(STATIC_LINK_LIBS)
 	$(CODE_SIGN) $(CSFLAGS) $@
 
 
@@ -182,7 +182,7 @@ ippfind:	ippfind.o ../cups/$(LIBCUPS) ippfind-static
 
 ippfind-static:	ippfind.o ../cups/$(LIBCUPS_STATIC)
 	echo Linking $@
-	$(CC) $(LDFLAGS) $(OPTIM) -o $@ ippfind.o ../cups/$(LIBCUPS_STATIC) $(LIBS)
+	$(CC) $(STATIC_LDFLAGS) $(LDFLAGS) $(OPTIM) -o $@ ippfind.o ../cups/$(LIBCUPS_STATIC) $(STATIC_LINK_LIBS)
 	$(CODE_SIGN) $(CSFLAGS) $@
 
 
@@ -202,7 +202,7 @@ ipptool:	ipptool.o ../cups/$(LIBCUPS) ipptool-static
 
 ipptool-static:	ipptool.o ../cups/$(LIBCUPS_STATIC)
 	echo Linking $@...
-	$(CC) $(LDFLAGS) $(OPTIM) -o $@ ipptool.o ../cups/$(LIBCUPS_STATIC) $(XFORMLIBS) $(LIBS)
+	$(CC) $(STATIC_LDFLAGS) $(LDFLAGS) $(OPTIM) -o $@ ipptool.o ../cups/$(LIBCUPS_STATIC) $(XFORMLIBS) $(STATIC_LINK_LIBS)
 	$(CODE_SIGN) $(CSFLAGS) $@
 
 
@@ -222,7 +222,7 @@ ipptransform:	ipptransform.o ipp-options.o ../cups/$(LIBCUPS) ipptransform-stati
 
 ipptransform-static:	ipptransform.o ipp-options.o ../cups/$(LIBCUPS_STATIC)
 	echo Linking $@...
-	$(CC) $(LDFLAGS) $(OPTIM) -o $@ ipptransform.o ipp-options.o ../cups/$(LIBCUPS_STATIC) $(XFORMLIBS) $(LIBS)
+	$(CC) $(STATIC_LDFLAGS) $(LDFLAGS) $(OPTIM) -o $@ ipptransform.o ipp-options.o ../cups/$(LIBCUPS_STATIC) $(XFORMLIBS) $(STATIC_LINK_LIBS)
 	$(CODE_SIGN) $(CSFLAGS) $@
 
 
