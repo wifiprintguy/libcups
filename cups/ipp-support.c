@@ -205,7 +205,7 @@ static const char * const ipp_std_ops[] =
 					// IPP System
   "Register-Output-Device",		// IPP System
 
-  // 0x0060 - 0x006a
+  // 0x0060 - 0x006c
   "Restart-System",			// IPP System
   "Resume-All-Printers",		// IPP System
   "Set-System-Attributes",		// IPP System
@@ -217,7 +217,9 @@ static const char * const ipp_std_ops[] =
   "Acknowledge-Encrypted-Job-Attributes",
 					// IPP TRUSTNOONE
   "Fetch-Encrypted-Job-Attributes",	// IPP TRUSTNOONE
-  "Get-Encrypted-Job-Attributes"	// IPP TRUSTNOONE
+  "Get-Encrypted-Job-Attributes",	// IPP TRUSTNOONE
+  "Check-For-New-Printer-Firmware",	// IPP FWUPDATE
+  "Update-Printer-Firmware"		// IPP FWUPDATE
 };
 static const char * const ipp_cups_ops[] =
 {
@@ -1610,6 +1612,7 @@ ippCreateRequestedArray(ipp_t *request)	// I - IPP request
     "client-info-supported",		// IPP JobExt
     "color-supported",
     "compression-supported",
+    "delay-update-until-supported",	// IPP FWUPDATE
     "device-service-count",
     "device-uri",			// CUPS extension
     "device-uuid",
@@ -1732,8 +1735,13 @@ ippCreateRequestedArray(ipp_t *request)	// I - IPP request
     "printer-finisher-supplies",	// IPP FIN
     "printer-finisher-supplies-description",
 					// IPP FIN
+    "printer-firmware-info-uri",	// IPP FWUPDATE
     "printer-firmware-name",		// PWG 5110.1
     "printer-firmware-patches",		// PWG 5110.1
+    "printer-firmware-repository-uri-configured",
+					// IPP FWUPDATE
+    "printer-firmware-repository-uri-supported",
+					// IPP FWUPDATE
     "printer-firmware-string-version",	// PWG 5110.1
     "printer-firmware-version",		// PWG 5110.1
     "printer-geo-location",
@@ -1756,6 +1764,24 @@ ippCreateRequestedArray(ipp_t *request)	// I - IPP request
     "printer-more-info",
     "printer-more-info-manufacturer",
     "printer-name",
+    "printer-new-firmware-check-date-time",
+					// IPP FWUPDATE
+    "printer-new-firmware-delayed-until",
+					// IPP FWUPDATE
+    "printer-new-firmware-delayed-until-date-time",
+					// IPP FWUPDATE
+    "printer-new-firmware-info-uri",	// IPP FWUPDATE
+    "printer-new-firmware-k-octets",	// IPP FWUPDATE
+    "printer-new-firmware-name",	// IPP FWUPDATE
+    "printer-new-firmware-patches",	// IPP FWUPDATE
+    "printer-new-firmware-policy-configured",
+					// IPP FWUPDATE
+    "printer-new-firmware-policy-supported",
+					// IPP FWUPDATE
+    "printer-new-firmware-string-version",
+					// IPP FWUPDATE
+    "printer-new-firmware-urgency",	// IPP FWUPDATE
+    "printer-new-firmware-version",	// IPP FWUPDATE
     "printer-organization",
     "printer-organizational-unit",
     "printer-output-tray",		// IPP NODRIVER

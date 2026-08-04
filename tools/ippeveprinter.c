@@ -122,6 +122,22 @@ static const char * const ippeve_preason_strings[] =
   "toner-low"
 };
 
+// Keywords for the "delay-update-until"/"delay-update-until-supported"
+// attributes (IPP FWUPDATE Table 2). Note: the "no-delay" keyword name
+// follows the FWUPDATE working draft's Table 2, which differs from its own
+// (likely erroneous) IANA Considerations table that lists "no-hold" instead.
+static const char * const ippeve_fw_delays[] =
+{
+  "no-delay",
+  "indefinite",
+  "day-time",
+  "evening",
+  "night",
+  "second-shift",
+  "third-shift",
+  "weekend"
+};
+
 
 //
 // URL scheme for web resources...
@@ -149,6 +165,17 @@ typedef struct ippeve_filter_s		// Attribute filter
 } ippeve_filter_t;
 
 typedef struct ippeve_job_s ippeve_job_t;
+
+typedef struct ippeve_fwinfo_s			// Simulated "new firmware" record (IPP FWUPDATE)
+{
+  char		info_uri[1024];		// printer-new-firmware-info-uri
+  char		name[256];		// printer-new-firmware-name
+  char		patches[256];		// printer-new-firmware-patches
+  char		string_version[256];	// printer-new-firmware-string-version
+  char		urgency[32];		// printer-new-firmware-urgency keyword
+  char		version[256];		// printer-new-firmware-version (octetString, as text)
+  int		k_octets;		// printer-new-firmware-k-octets
+} ippeve_fwinfo_t;
 
 typedef struct ippeve_printer_s		// Printer data
 {
@@ -183,6 +210,25 @@ typedef struct ippeve_printer_s		// Printer data
   ippeve_job_t		*active_job;	// Current active/pending job
   int			next_job_id;	// Next job-id value
   cups_rwlock_t		rwlock;		// Printer lock
+
+  // IPP FWUPDATE simulation state...
+  char			fw_policy[32];	// printer-new-firmware-policy-configured
+  char			fw_repo_uri[1024];
+					// printer-firmware-repository-uri-configured
+  char			fw_info_uri[1024];
+					// printer-firmware-info-uri (installed firmware)
+  time_t		fw_check_time;	// printer-new-firmware-check-date-time (0 = never checked)
+  bool			fw_available;	// Is "new" firmware currently discovered?
+  bool			fw_unreachable;	// Simulate firmware-repository-unreachable on next check?
+  ippeve_fwinfo_t	fw_new;		// Discovered new-firmware record (when fw_available)
+  char			fw_delay_keyword[32];
+					// printer-new-firmware-delayed-until ("" = none pending)
+  time_t		fw_delay_time;	// printer-new-firmware-delayed-until-date-time (0 = none pending)
+  char			fw_fail_phase[32];
+					// Force this installation phase to fail ("" = always succeed)
+  char			fw_reasons[6][64];
+					// Active FWUPDATE printer-state-reasons keywords
+					// (used verbatim, unlike state_keywords above)
 } ippeve_printer_t;
 
 struct ippeve_job_s			// Job data
@@ -232,7 +278,10 @@ typedef struct ippeve_client_s		// Client data
 //
 
 static http_status_t	authenticate_request(ippeve_client_t *client);
+static void		add_fw_reason(ippeve_printer_t *printer, const char *reason);
 static void		clean_jobs(ippeve_printer_t *printer);
+static bool		has_fw_reason(ippeve_printer_t *printer, const char *reason);
+static void		remove_fw_reason(ippeve_printer_t *printer, const char *reason);
 static int		compare_jobs(ippeve_job_t *a, ippeve_job_t *b, void *data);
 static void		copy_attributes(ipp_t *to, ipp_t *from, cups_array_t *ra, ipp_tag_t group_tag, bool quickcopy);
 static void		copy_job_attributes(ippeve_client_t *client, ippeve_job_t *job, cups_array_t *ra);
@@ -243,7 +292,7 @@ static int		create_listener(const char *name, int port, int family);
 static ipp_t		*create_media_col(const char *media, const char *source, const char *type, ipp_t *media_size, int bottom, int left, int right, int top);
 static ipp_t		*create_media_size(int width, int length);
 static ipp_t		*create_media_size_range(int min_width, int max_width, int min_length, int max_length);
-static ippeve_printer_t	*create_printer(const char *servername, int serverport, const char *name, const char *location, const char *icons, const char *strings, cups_array_t *docformats, const char *subtypes, const char *directory, const char *command, const char *device_uri, const char *output_format, ipp_t *attrs);
+static ippeve_printer_t	*create_printer(const char *servername, int serverport, const char *name, const char *location, const char *icons, const char *strings, cups_array_t *docformats, const char *subtypes, const char *directory, const char *command, const char *device_uri, const char *output_format, const char *fw_repo_uri, const char *fw_policy, ipp_t *attrs);
 static void		debug_attributes(const char *title, ipp_t *ipp, int response);
 static void		delete_client(ippeve_client_t *client);
 static void		delete_job(ippeve_job_t *job);
@@ -263,6 +312,7 @@ static void		ipp_cancel_job(ippeve_client_t *client);
 static void		ipp_cancel_jobs(ippeve_client_t *client);
 static void		ipp_close_job(ippeve_client_t *client);
 static void		ipp_create_job(ippeve_client_t *client);
+static void		ipp_check_for_new_printer_firmware(ippeve_client_t *client);
 static void		ipp_get_job_attributes(ippeve_client_t *client);
 static void		ipp_get_jobs(ippeve_client_t *client);
 static void		ipp_get_printer_attributes(ippeve_client_t *client);
@@ -271,6 +321,7 @@ static void		ipp_print_job(ippeve_client_t *client);
 static void		ipp_print_uri(ippeve_client_t *client);
 static void		ipp_send_document(ippeve_client_t *client);
 static void		ipp_send_uri(ippeve_client_t *client);
+static void		ipp_update_printer_firmware(ippeve_client_t *client);
 static void		ipp_validate_job(ippeve_client_t *client);
 static ipp_t		*load_ippfile_attributes(const char *servername, int serverport, const char *filename, cups_array_t *docformats);
 static ipp_t		*load_legacy_attributes(const char *make, const char *model, int ppm, int ppm_color, int duplex, cups_array_t *docformats);
@@ -282,6 +333,7 @@ static void		process_attr_message(ippeve_job_t *job, char *message);
 static void		*process_client(ippeve_client_t *client);
 static int		process_http(ippeve_client_t *client);
 static int		process_ipp(ippeve_client_t *client);
+static void		*process_firmware_update(ippeve_printer_t *printer);
 static void		*process_job(ippeve_job_t *job);
 static void		process_state_message(ippeve_printer_t *printer, const char *message);
 static bool		register_printer(ippeve_printer_t *printer);
@@ -290,6 +342,7 @@ static void		respond_ignored(ippeve_client_t *client, ipp_attribute_t *attr);
 static void		respond_ipp(ippeve_client_t *client, ipp_status_t status, const char *message, ...) _CUPS_FORMAT(3, 4);
 static void		respond_unsupported(ippeve_client_t *client, ipp_attribute_t *attr);
 static void		run_printer(ippeve_printer_t *printer);
+static int		show_firmware(ippeve_client_t *client);
 static int		show_media(ippeve_client_t *client);
 static int		show_status(ippeve_client_t *client);
 static int		show_supplies(ippeve_client_t *client);
@@ -352,6 +405,11 @@ main(int  argc,				// I - Number of command-line args
   const char	*servername = NULL;	// Server host name
   int		serverport = 0;		// Server port number (0 = auto)
   ippeve_printer_t *printer;		// Printer object
+  size_t	num_fw_options = 0;	// Number of -o FWUPDATE simulation options
+  cups_option_t	*fw_options = NULL;	// -o FWUPDATE simulation options
+  const char	*fw_repo_uri,		// firmware-repository-uri option
+		*fw_policy,		// firmware-policy option
+		*fw_val;		// Current option value
 
 
   cupsLangSetLocale(argv);
@@ -553,6 +611,17 @@ main(int  argc,				// I - Number of command-line args
 	      servername = argv[i];
 	      break;
 
+          case 'o' : // -o name=value (IPP FWUPDATE simulation options)
+	      i ++;
+	      if (i >= argc)
+	      {
+	        cupsLangPrintf(stderr, _("%s: Missing option value after '-o'."), "ippeveprinter");
+	        return (usage(stderr));
+	      }
+
+	      num_fw_options = cupsParseOptions(argv[i], NULL, num_fw_options, &fw_options);
+	      break;
+
 	  case 'p' : // -p port
 	      i ++;
 	      if (i >= argc || !isdigit(argv[i][0] & 255))
@@ -696,10 +765,43 @@ main(int  argc,				// I - Number of command-line args
   if (!docformats && !ippFindAttribute(attrs, "document-format-supported", IPP_TAG_MIMETYPE))
     docformats = cupsArrayNewStrings(ppm_color > 0 ? "image/jpeg,image/pwg-raster,image/urf": "image/pwg-raster,image/urf", ',');
 
-  if ((printer = create_printer(servername, serverport, name, location, icon, strings, docformats, subtypes, directory, command, device_uri, output_format, attrs)) == NULL)
+  // Firmware Update Extensions (FWUPDATE) simulation defaults; -o
+  // firmware-repository-uri=... and -o firmware-policy=... configure the
+  // (always-advertised) "-configured"/"-supported" description attributes,
+  // per PWG FWUPDATE section 6.2.
+  if ((fw_repo_uri = cupsGetOption("firmware-repository-uri", num_fw_options, fw_options)) == NULL)
+    fw_repo_uri = "https://example.com/firmware";
+  if ((fw_policy = cupsGetOption("firmware-policy", num_fw_options, fw_options)) == NULL)
+    fw_policy = "directed";
+
+  if ((printer = create_printer(servername, serverport, name, location, icon, strings, docformats, subtypes, directory, command, device_uri, output_format, fw_repo_uri, fw_policy, attrs)) == NULL)
     return (1);
 
   printer->web_forms = web_forms;
+
+  // Apply the remaining FWUPDATE simulation options (Status attributes; can
+  // also be changed later via the "/firmware" web page)...
+  if ((fw_val = cupsGetOption("firmware-available", num_fw_options, fw_options)) != NULL && (!strcmp(fw_val, "1") || !strcmp(fw_val, "true") || !strcmp(fw_val, "yes")))
+  {
+    printer->fw_available = true;
+
+    cupsCopyString(printer->fw_new.string_version, cupsGetOption("firmware-version", num_fw_options, fw_options) ? cupsGetOption("firmware-version", num_fw_options, fw_options) : "2.0.1", sizeof(printer->fw_new.string_version));
+    cupsCopyString(printer->fw_new.version, printer->fw_new.string_version, sizeof(printer->fw_new.version));
+    cupsCopyString(printer->fw_new.urgency, cupsGetOption("firmware-urgency", num_fw_options, fw_options) ? cupsGetOption("firmware-urgency", num_fw_options, fw_options) : "feature", sizeof(printer->fw_new.urgency));
+    snprintf(printer->fw_new.name, sizeof(printer->fw_new.name), "%s Firmware", printer->name ? printer->name : "Example");
+    snprintf(printer->fw_new.info_uri, sizeof(printer->fw_new.info_uri), "%s/release-notes.html", fw_repo_uri);
+    printer->fw_new.k_octets = 51200;
+
+    cupsCopyString(printer->fw_reasons[0], "new-firmware-available", sizeof(printer->fw_reasons[0]));
+  }
+
+  if ((fw_val = cupsGetOption("firmware-fail-phase", num_fw_options, fw_options)) != NULL)
+    cupsCopyString(printer->fw_fail_phase, fw_val, sizeof(printer->fw_fail_phase));
+
+  if ((fw_val = cupsGetOption("firmware-repository-unreachable", num_fw_options, fw_options)) != NULL && (!strcmp(fw_val, "1") || !strcmp(fw_val, "true") || !strcmp(fw_val, "yes")))
+    printer->fw_unreachable = true;
+
+  cupsFreeOptions(num_fw_options, fw_options);
 
   cupsSetServerCredentials(keypath, printer->hostname, true);
 
@@ -729,6 +831,71 @@ main(int  argc,				// I - Number of command-line args
   delete_printer(printer);
 
   return (0);
+}
+
+
+//
+// 'has_fw_reason()' - Return whether the given IPP FWUPDATE printer-state-reasons
+//                     keyword is currently active.
+//
+
+static bool				// O - `true` if present, `false` otherwise
+has_fw_reason(ippeve_printer_t *printer,	// I - Printer
+              const char       *reason)	// I - Keyword
+{
+  size_t	i;			// Looping var
+
+  for (i = 0; i < (sizeof(printer->fw_reasons) / sizeof(printer->fw_reasons[0])); i ++)
+  {
+    if (!strcmp(printer->fw_reasons[i], reason))
+      return (true);
+  }
+
+  return (false);
+}
+
+
+//
+// 'add_fw_reason()' - Add an IPP FWUPDATE printer-state-reasons keyword.
+//
+
+static void
+add_fw_reason(ippeve_printer_t *printer,	// I - Printer
+              const char       *reason)	// I - Keyword
+{
+  size_t	i;			// Looping var
+
+  if (has_fw_reason(printer, reason))
+    return;
+
+  for (i = 0; i < (sizeof(printer->fw_reasons) / sizeof(printer->fw_reasons[0])); i ++)
+  {
+    if (!printer->fw_reasons[i][0])
+    {
+      cupsCopyString(printer->fw_reasons[i], reason, sizeof(printer->fw_reasons[i]));
+      return;
+    }
+  }
+
+  fprintf(stderr, "Warning: No room to add FWUPDATE printer-state-reasons keyword \"%s\".\n", reason);
+}
+
+
+//
+// 'remove_fw_reason()' - Remove an IPP FWUPDATE printer-state-reasons keyword.
+//
+
+static void
+remove_fw_reason(ippeve_printer_t *printer,	// I - Printer
+                  const char       *reason)	// I - Keyword
+{
+  size_t	i;			// Looping var
+
+  for (i = 0; i < (sizeof(printer->fw_reasons) / sizeof(printer->fw_reasons[0])); i ++)
+  {
+    if (!strcmp(printer->fw_reasons[i], reason))
+      printer->fw_reasons[i][0] = '\0';
+  }
 }
 
 
@@ -1441,6 +1608,8 @@ create_printer(
     const char   *command,		// I - Command to run on job files, if any
     const char   *device_uri,		// I - Output device, if any
     const char   *output_format,	// I - Output format, if any
+    const char   *fw_repo_uri,		// I - printer-firmware-repository-uri-configured, if any (IPP FWUPDATE)
+    const char   *fw_policy,		// I - printer-new-firmware-policy-configured, if any (IPP FWUPDATE)
     ipp_t        *attrs)		// I - Capability attributes
 {
   ippeve_printer_t	*printer;	// Printer
@@ -1478,6 +1647,7 @@ create_printer(
   };
   static const char * const features[] =// ipp-features-supported values
   {
+    "fwupdate",
     "ipp-everywhere"
   };
   static const int	ops[] =		// operations-supported values
@@ -1495,7 +1665,15 @@ create_printer(
     IPP_OP_CANCEL_JOBS,
     IPP_OP_CANCEL_MY_JOBS,
     IPP_OP_CLOSE_JOB,
-    IPP_OP_IDENTIFY_PRINTER
+    IPP_OP_IDENTIFY_PRINTER,
+    IPP_OP_CHECK_FOR_NEW_PRINTER_FIRMWARE,
+    IPP_OP_UPDATE_PRINTER_FIRMWARE
+  };
+  static const char * const fw_policies[] =
+					// printer-new-firmware-policy-supported values
+  {
+    "check",
+    "directed"
   };
   static const char * const charsets[] =// charset-supported values
   {
@@ -1692,6 +1870,12 @@ create_printer(
   printer->state_time     = printer->start_time;
   printer->jobs           = cupsArrayNew((cups_array_cb_t)compare_jobs, NULL, NULL, 0, NULL, NULL);
   printer->next_job_id    = 1;
+
+  // IPP FWUPDATE simulation state (Status attributes default to "never
+  // checked"/"none pending" via the calloc() above)...
+  cupsCopyString(printer->fw_repo_uri, fw_repo_uri, sizeof(printer->fw_repo_uri));
+  cupsCopyString(printer->fw_policy, fw_policy, sizeof(printer->fw_policy));
+  snprintf(printer->fw_info_uri, sizeof(printer->fw_info_uri), "%s/current.html", fw_repo_uri);
 
   if (printer->icons[0])
   {
@@ -1986,6 +2170,14 @@ create_printer(
 
   // operations-supported
   ippAddIntegers(printer->attrs, IPP_TAG_PRINTER, IPP_TAG_ENUM, "operations-supported", sizeof(ops) / sizeof(ops[0]), ops);
+
+  // IPP FWUPDATE (Firmware Update Extensions) Printer Description attributes
+  ippAddStrings(printer->attrs, IPP_TAG_PRINTER, IPP_CONST_TAG(IPP_TAG_KEYWORD), "delay-update-until-supported", sizeof(ippeve_fw_delays) / sizeof(ippeve_fw_delays[0]), NULL, ippeve_fw_delays);
+  ippAddString(printer->attrs, IPP_TAG_PRINTER, IPP_TAG_KEYWORD, "printer-new-firmware-policy-configured", NULL, printer->fw_policy);
+  ippAddStrings(printer->attrs, IPP_TAG_PRINTER, IPP_CONST_TAG(IPP_TAG_KEYWORD), "printer-new-firmware-policy-supported", sizeof(fw_policies) / sizeof(fw_policies[0]), NULL, fw_policies);
+  ippAddString(printer->attrs, IPP_TAG_PRINTER, IPP_TAG_URI, "printer-firmware-repository-uri-configured", NULL, printer->fw_repo_uri);
+  ippAddString(printer->attrs, IPP_TAG_PRINTER, IPP_TAG_URI, "printer-firmware-repository-uri-supported", NULL, printer->fw_repo_uri);
+  ippAddString(printer->attrs, IPP_TAG_PRINTER, IPP_TAG_URI, "printer-firmware-info-uri", NULL, printer->fw_info_uri);
 
   if (has_pdf)
   {
@@ -2811,8 +3003,9 @@ html_header(ippeve_client_t *client,	// I - Client
 		     "<td class=\"nav%s\"><a href=\"/\">Status</a></td>"
 		     "<td class=\"nav%s\"><a href=\"/supplies\">Supplies</a></td>"
 		     "<td class=\"nav%s\"><a href=\"/media\">Media</a></td>"
+		     "<td class=\"nav%s\"><a href=\"/firmware\">Firmware</a></td>"
 		     "</tr></table>\n"
-		     "<div class=\"body\">\n", !strcmp(client->uri, "/") ? " sel" : "", !strcmp(client->uri, "/supplies") ? " sel" : "", !strcmp(client->uri, "/media") ? " sel" : "");
+		     "<div class=\"body\">\n", !strcmp(client->uri, "/") ? " sel" : "", !strcmp(client->uri, "/supplies") ? " sel" : "", !strcmp(client->uri, "/media") ? " sel" : "", !strcmp(client->uri, "/firmware") ? " sel" : "");
 
   return (ret);
 }
@@ -3139,6 +3332,68 @@ ipp_cancel_jobs(
   respond_ipp(client, IPP_STATUS_OK, NULL);
 
   cupsRWUnlock(&client->printer->rwlock);
+}
+
+
+//
+// 'ipp_check_for_new_printer_firmware()' - Check the (simulated) firmware
+//                                          repository for new firmware.
+//
+// Note: authentication is already enforced generically for every operation
+// except Get-Printer-Attributes before this is called (see process_ipp());
+// ippeveprinter has no Operator/Administrator role distinction to check
+// beyond that.
+//
+
+static void
+ipp_check_for_new_printer_firmware(
+    ippeve_client_t *client)		// I - Client
+{
+  ippeve_printer_t	*printer = client->printer;
+					// Printer
+
+
+  respond_ipp(client, IPP_STATUS_OK, NULL);
+
+  cupsRWLockWrite(&printer->rwlock);
+
+  // Perform the (simulated, synchronous) Discovery phase...
+  printer->fw_check_time = time(NULL);
+
+  remove_fw_reason(printer, "firmware-repository-unreachable");
+  remove_fw_reason(printer, "firmware-repository-access-error");
+
+  if (printer->fw_unreachable)
+  {
+    printer->fw_available = false;
+    add_fw_reason(printer, "firmware-repository-unreachable");
+  }
+  else if (printer->fw_new.string_version[0])
+  {
+    // A "new firmware" record is configured (via -o firmware-available=1 at
+    // startup or the /firmware web page) - report it as discovered.
+    printer->fw_available = true;
+    add_fw_reason(printer, "new-firmware-available");
+  }
+  else
+  {
+    printer->fw_available = false;
+    remove_fw_reason(printer, "new-firmware-available");
+  }
+
+  // Include the current findings directly in the response, too (IPP
+  // FWUPDATE section 5.1.2, Group 2: Printer Attributes - all OPTIONAL)...
+  ippAddDate(client->response, IPP_TAG_PRINTER, "printer-new-firmware-check-date-time", ippTimeToDate(printer->fw_check_time));
+
+  if (printer->fw_available)
+  {
+    ippAddString(client->response, IPP_TAG_PRINTER, IPP_TAG_URI, "printer-new-firmware-info-uri", NULL, printer->fw_new.info_uri);
+    ippAddInteger(client->response, IPP_TAG_PRINTER, IPP_TAG_INTEGER, "printer-new-firmware-k-octets", printer->fw_new.k_octets);
+    ippAddString(client->response, IPP_TAG_PRINTER, IPP_TAG_KEYWORD, "printer-new-firmware-urgency", NULL, printer->fw_new.urgency);
+    ippAddString(client->response, IPP_TAG_PRINTER, IPP_CONST_TAG(IPP_TAG_TEXT), "printer-new-firmware-string-version", NULL, printer->fw_new.string_version);
+  }
+
+  cupsRWUnlock(&printer->rwlock);
 }
 
 
@@ -3529,8 +3784,106 @@ ipp_get_printer_attributes(
 	attr = ippAddString(client->response, IPP_TAG_PRINTER, IPP_TAG_KEYWORD, "printer-state-reasons", NULL, reason);
     }
 
+    // IPP FWUPDATE keywords (section 7.3) are complete keyword strings on
+    // their own and, unlike the two loops above, do NOT get a
+    // "-report"/"-warning"/"-error" severity suffix appended.
+    for (i = 0; i < (int)(sizeof(printer->fw_reasons) / sizeof(printer->fw_reasons[0])); i ++)
+    {
+      if (!printer->fw_reasons[i][0])
+        continue;
+
+      if (attr)
+	ippSetString(client->response, &attr, ippGetCount(attr), printer->fw_reasons[i]);
+      else
+	attr = ippAddString(client->response, IPP_TAG_PRINTER, IPP_TAG_KEYWORD, "printer-state-reasons", NULL, printer->fw_reasons[i]);
+    }
+
     if (!attr)
       ippAddString(client->response, IPP_TAG_PRINTER, IPP_CONST_TAG(IPP_TAG_KEYWORD), "printer-state-reasons", NULL, "none");
+  }
+
+  if (!ra || cupsArrayFind(ra, "printer-new-firmware-check-date-time"))
+  {
+    if (printer->fw_check_time)
+      ippAddDate(client->response, IPP_TAG_PRINTER, "printer-new-firmware-check-date-time", ippTimeToDate(printer->fw_check_time));
+    else
+      ippAddOutOfBand(client->response, IPP_TAG_PRINTER, IPP_TAG_NOVALUE, "printer-new-firmware-check-date-time");
+  }
+
+  if (printer->fw_delay_keyword[0] && (!ra || cupsArrayFind(ra, "printer-new-firmware-delayed-until")))
+    ippAddString(client->response, IPP_TAG_PRINTER, IPP_TAG_KEYWORD, "printer-new-firmware-delayed-until", NULL, printer->fw_delay_keyword);
+
+  if (printer->fw_delay_time && (!ra || cupsArrayFind(ra, "printer-new-firmware-delayed-until-date-time")))
+    ippAddDate(client->response, IPP_TAG_PRINTER, "printer-new-firmware-delayed-until-date-time", ippTimeToDate(printer->fw_delay_time));
+
+  if (!ra || cupsArrayFind(ra, "printer-new-firmware-info-uri"))
+  {
+    if (printer->fw_available)
+      ippAddString(client->response, IPP_TAG_PRINTER, IPP_TAG_URI, "printer-new-firmware-info-uri", NULL, printer->fw_new.info_uri);
+    else if (has_fw_reason(printer, "firmware-repository-unreachable") || has_fw_reason(printer, "firmware-repository-access-error"))
+      ippAddOutOfBand(client->response, IPP_TAG_PRINTER, IPP_TAG_UNKNOWN, "printer-new-firmware-info-uri");
+    else
+      ippAddOutOfBand(client->response, IPP_TAG_PRINTER, IPP_TAG_NOVALUE, "printer-new-firmware-info-uri");
+  }
+
+  if (!ra || cupsArrayFind(ra, "printer-new-firmware-k-octets"))
+  {
+    if (printer->fw_available)
+      ippAddInteger(client->response, IPP_TAG_PRINTER, IPP_TAG_INTEGER, "printer-new-firmware-k-octets", printer->fw_new.k_octets);
+    else if (has_fw_reason(printer, "firmware-repository-unreachable") || has_fw_reason(printer, "firmware-repository-access-error"))
+      ippAddOutOfBand(client->response, IPP_TAG_PRINTER, IPP_TAG_UNKNOWN, "printer-new-firmware-k-octets");
+    else
+      ippAddOutOfBand(client->response, IPP_TAG_PRINTER, IPP_TAG_NOVALUE, "printer-new-firmware-k-octets");
+  }
+
+  if (!ra || cupsArrayFind(ra, "printer-new-firmware-name"))
+  {
+    if (printer->fw_available)
+      ippAddString(client->response, IPP_TAG_PRINTER, IPP_TAG_NAME, "printer-new-firmware-name", NULL, printer->fw_new.name);
+    else if (has_fw_reason(printer, "firmware-repository-unreachable") || has_fw_reason(printer, "firmware-repository-access-error"))
+      ippAddOutOfBand(client->response, IPP_TAG_PRINTER, IPP_TAG_UNKNOWN, "printer-new-firmware-name");
+    else
+      ippAddOutOfBand(client->response, IPP_TAG_PRINTER, IPP_TAG_NOVALUE, "printer-new-firmware-name");
+  }
+
+  if (!ra || cupsArrayFind(ra, "printer-new-firmware-patches"))
+  {
+    if (printer->fw_available)
+      ippAddString(client->response, IPP_TAG_PRINTER, IPP_CONST_TAG(IPP_TAG_TEXT), "printer-new-firmware-patches", NULL, printer->fw_new.patches);
+    else if (has_fw_reason(printer, "firmware-repository-unreachable") || has_fw_reason(printer, "firmware-repository-access-error"))
+      ippAddOutOfBand(client->response, IPP_TAG_PRINTER, IPP_TAG_UNKNOWN, "printer-new-firmware-patches");
+    else
+      ippAddOutOfBand(client->response, IPP_TAG_PRINTER, IPP_TAG_NOVALUE, "printer-new-firmware-patches");
+  }
+
+  if (!ra || cupsArrayFind(ra, "printer-new-firmware-string-version"))
+  {
+    if (printer->fw_available)
+      ippAddString(client->response, IPP_TAG_PRINTER, IPP_CONST_TAG(IPP_TAG_TEXT), "printer-new-firmware-string-version", NULL, printer->fw_new.string_version);
+    else if (has_fw_reason(printer, "firmware-repository-unreachable") || has_fw_reason(printer, "firmware-repository-access-error"))
+      ippAddOutOfBand(client->response, IPP_TAG_PRINTER, IPP_TAG_UNKNOWN, "printer-new-firmware-string-version");
+    else
+      ippAddOutOfBand(client->response, IPP_TAG_PRINTER, IPP_TAG_NOVALUE, "printer-new-firmware-string-version");
+  }
+
+  if (!ra || cupsArrayFind(ra, "printer-new-firmware-urgency"))
+  {
+    if (printer->fw_available)
+      ippAddString(client->response, IPP_TAG_PRINTER, IPP_TAG_KEYWORD, "printer-new-firmware-urgency", NULL, printer->fw_new.urgency);
+    else if (has_fw_reason(printer, "firmware-repository-unreachable") || has_fw_reason(printer, "firmware-repository-access-error"))
+      ippAddOutOfBand(client->response, IPP_TAG_PRINTER, IPP_TAG_UNKNOWN, "printer-new-firmware-urgency");
+    else
+      ippAddOutOfBand(client->response, IPP_TAG_PRINTER, IPP_TAG_NOVALUE, "printer-new-firmware-urgency");
+  }
+
+  if (!ra || cupsArrayFind(ra, "printer-new-firmware-version"))
+  {
+    if (printer->fw_available)
+      ippAddOctetString(client->response, IPP_TAG_PRINTER, "printer-new-firmware-version", printer->fw_new.version, (int)strlen(printer->fw_new.version));
+    else if (has_fw_reason(printer, "firmware-repository-unreachable") || has_fw_reason(printer, "firmware-repository-access-error"))
+      ippAddOutOfBand(client->response, IPP_TAG_PRINTER, IPP_TAG_UNKNOWN, "printer-new-firmware-version");
+    else
+      ippAddOutOfBand(client->response, IPP_TAG_PRINTER, IPP_TAG_NOVALUE, "printer-new-firmware-version");
   }
 
   if (!ra || cupsArrayFind(ra, "printer-strings-uri"))
@@ -3839,6 +4192,106 @@ ipp_send_uri(ippeve_client_t *client)	// I - Client
   cupsRWUnlock(&(client->printer->rwlock));
 
   finish_document_uri(client, job);
+}
+
+
+//
+// 'ipp_update_printer_firmware()' - Install the discovered new firmware, now
+//                                   or after a delay.
+//
+// Note: authentication is already enforced generically for every operation
+// except Get-Printer-Attributes before this is called (see process_ipp());
+// ippeveprinter has no Operator/Administrator role distinction to check
+// beyond that.
+//
+
+static void
+ipp_update_printer_firmware(
+    ippeve_client_t *client)		// I - Client
+{
+  ippeve_printer_t	*printer = client->printer;
+					// Printer
+  ipp_attribute_t	*delay_attr,	// delay-update-until
+			*delay_time_attr;
+					// delay-update-until-date-time
+  cups_thread_t		t;		// Firmware update thread
+
+
+  // IPP FWUPDATE section 5.2: the Client MUST send this over a secure
+  // connection; a Printer MAY alternatively just reject the request instead
+  // of responding with an HTTP 426 Upgrade Required, which is simpler for a
+  // reference implementation that shares one HTTP response path across all
+  // operations...
+  if (!httpIsEncrypted(client->http))
+  {
+    respond_ipp(client, IPP_STATUS_ERROR_FORBIDDEN, "Update-Printer-Firmware requires a secure (TLS) connection.");
+    return;
+  }
+
+  delay_attr      = ippFindAttribute(client->request, "delay-update-until", IPP_TAG_ZERO);
+  delay_time_attr = ippFindAttribute(client->request, "delay-update-until-date-time", IPP_TAG_DATE);
+
+  if (delay_attr && delay_time_attr)
+  {
+    respond_ipp(client, IPP_STATUS_ERROR_CONFLICTING, "The \"delay-update-until\" and \"delay-update-until-date-time\" attributes cannot both be supplied.");
+    return;
+  }
+
+  if (delay_attr && ippGetValueTag(delay_attr) == IPP_TAG_KEYWORD)
+  {
+    const char	*delay_value = ippGetString(delay_attr, 0, NULL);
+					// Keyword value
+    size_t	i;			// Looping var
+    bool	supported = false;	// Is the keyword supported?
+
+    for (i = 0; i < (sizeof(ippeve_fw_delays) / sizeof(ippeve_fw_delays[0])); i ++)
+    {
+      if (!strcmp(delay_value, ippeve_fw_delays[i]))
+      {
+        supported = true;
+        break;
+      }
+    }
+
+    if (!supported)
+    {
+      respond_unsupported(client, delay_attr);
+      return;
+    }
+  }
+
+  respond_ipp(client, IPP_STATUS_OK, NULL);
+
+  cupsRWLockWrite(&printer->rwlock);
+
+  printer->fw_delay_keyword[0] = '\0';
+  printer->fw_delay_time       = 0;
+  remove_fw_reason(printer, "new-firmware-installation-delay-until-specified");
+
+  if (delay_attr)
+  {
+    cupsCopyString(printer->fw_delay_keyword, ippGetString(delay_attr, 0, NULL), sizeof(printer->fw_delay_keyword));
+    add_fw_reason(printer, "new-firmware-installation-delay-until-specified");
+    ippAddString(client->response, IPP_TAG_PRINTER, IPP_TAG_KEYWORD, "printer-new-firmware-delayed-until", NULL, printer->fw_delay_keyword);
+  }
+  else if (delay_time_attr)
+  {
+    printer->fw_delay_time = ippDateToTime(ippGetDate(delay_time_attr, 0));
+    add_fw_reason(printer, "new-firmware-installation-delay-until-specified");
+    ippAddDate(client->response, IPP_TAG_PRINTER, "printer-new-firmware-delayed-until-date-time", ippTimeToDate(printer->fw_delay_time));
+  }
+
+  cupsRWUnlock(&printer->rwlock);
+
+  // Perform the Acquisition/Validation/Installation/Activation/Cleanup
+  // phases in the background so this operation can "respond immediately",
+  // per IPP FWUPDATE section 5.2...
+  t = cupsThreadCreate((cups_thread_func_t)process_firmware_update, printer);
+
+  if (t)
+    cupsThreadDetach(t);
+  else
+    fprintf(stderr, "%s Unable to start firmware update thread.\n", client->hostname);
 }
 
 
@@ -5129,7 +5582,7 @@ process_http(ippeve_client_t *client)	// I - Client connection
 	  return (respond_http(client, HTTP_STATUS_OK, NULL, "text/strings", 0));
         else if (!strcmp(client->uri, "/icon.png") || !strcmp(client->uri, "/icon-lg.png") || !strcmp(client->uri, "/icon-sm.png"))
 	  return (respond_http(client, HTTP_STATUS_OK, NULL, "image/png", 0));
-	else if (!strcmp(client->uri, "/") || !strcmp(client->uri, "/media") || !strcmp(client->uri, "/supplies"))
+	else if (!strcmp(client->uri, "/") || !strcmp(client->uri, "/media") || !strcmp(client->uri, "/supplies") || !strcmp(client->uri, "/firmware"))
 	  return (respond_http(client, HTTP_STATUS_OK, NULL, "text/html", 0));
 	else
 	  return (respond_http(client, HTTP_STATUS_NOT_FOUND, NULL, NULL, 0));
@@ -5325,6 +5778,11 @@ process_http(ippeve_client_t *client)	// I - Client connection
 	  {
 	    // Show web supplies page...
 	    return (show_supplies(client));
+	  }
+	  else if (!strcmp(client->uri, "/firmware"))
+	  {
+	    // Show web firmware page...
+	    return (show_firmware(client));
 	  }
 	  else
 	    return (respond_http(client, HTTP_STATUS_NOT_FOUND, NULL, NULL, 0));
@@ -5572,6 +6030,14 @@ process_ipp(ippeve_client_t *client)	// I - Client
 	        ipp_identify_printer(client);
 		break;
 
+	    case IPP_OP_CHECK_FOR_NEW_PRINTER_FIRMWARE :
+	        ipp_check_for_new_printer_firmware(client);
+		break;
+
+	    case IPP_OP_UPDATE_PRINTER_FIRMWARE :
+	        ipp_update_printer_firmware(client);
+		break;
+
 	    default :
 		respond_ipp(client, IPP_STATUS_ERROR_OPERATION_NOT_SUPPORTED, "Operation not supported.");
 		break;
@@ -5586,6 +6052,203 @@ process_ipp(ippeve_client_t *client)	// I - Client
     httpFlush(client->http);		// Flush trailing (junk) data
 
   return (respond_http(client, HTTP_STATUS_OK, NULL, "application/ipp", ippGetLength(client->response)));
+}
+
+
+//
+// 'process_firmware_update()' - Simulate installing the previously-discovered
+//                               new firmware, honoring any requested delay.
+//
+// This walks the Acquisition/Validation/Installation/Activation/Cleanup
+// phases from IPP FWUPDATE Figure 1, reporting each as "-in-progress" then
+// "-success"/"-failure" via the printer's printer-state-reasons, with a
+// Recovery phase on failure. Since this is a reference/test implementation
+// with no real firmware to fetch, each phase is simulated with a short
+// sleep; likewise, the named "delay-update-until" keywords (day-time,
+// evening, etc.) don't model real wall-clock policy - only "no-delay" (run
+// now), "indefinite" (never run automatically), and an explicit
+// "delay-update-until-date-time" are honored precisely, and other keywords
+// use a short placeholder wait so REPEAT-MATCH-style polling in ipptool
+// tests has something real to observe.
+//
+
+static void *				// O - Thread exit status
+process_firmware_update(
+    ippeve_printer_t *printer)		// I - Printer
+{
+  static const char * const phases[] =	// Installation phases, in order
+  {
+    "acquisition",
+    "validation",
+    "installation",
+    "activation",
+    "cleanup"
+  };
+  size_t	i;			// Looping var
+  char		reason[64];		// printer-state-reasons keyword buffer
+  bool		failed = false;		// Did a phase fail?
+
+
+  // Wait out any requested delay...
+  if (printer->fw_delay_keyword[0] && !strcmp(printer->fw_delay_keyword, "indefinite"))
+  {
+    // Never installs automatically - a later Update-Printer-Firmware
+    // request (with a different delay) is required to proceed.
+    return (NULL);
+  }
+  else if (printer->fw_delay_time)
+  {
+    while (time(NULL) < printer->fw_delay_time)
+      sleep(1);
+  }
+  else if (printer->fw_delay_keyword[0] && strcmp(printer->fw_delay_keyword, "no-delay"))
+  {
+    // Placeholder wait for the named time-of-day keywords - see note above.
+    sleep(5);
+  }
+
+  cupsRWLockWrite(&printer->rwlock);
+
+  if (!printer->fw_available)
+  {
+    // Nothing to install (e.g. a later Check-For-New-Printer-Firmware
+    // determined the firmware is no longer available) - quietly do nothing.
+    printer->fw_delay_keyword[0] = '\0';
+    printer->fw_delay_time       = 0;
+    remove_fw_reason(printer, "new-firmware-installation-delay-until-specified");
+    cupsRWUnlock(&printer->rwlock);
+    return (NULL);
+  }
+
+  printer->fw_delay_keyword[0] = '\0';
+  printer->fw_delay_time       = 0;
+  remove_fw_reason(printer, "new-firmware-installation-delay-until-specified");
+
+  printer->state      = IPP_PSTATE_STOPPED;
+  printer->state_time = time(NULL);
+
+  {
+    ipp_attribute_t *accepting = ippFindAttribute(printer->attrs, "printer-is-accepting-jobs", IPP_TAG_BOOLEAN);
+
+    if (accepting)
+      ippSetBoolean(printer->attrs, &accepting, 0, false);
+  }
+
+  // Clear out any per-phase reasons left over from a previous update
+  // attempt so this run starts clean - the small fw_reasons[] array only
+  // has room for what's active *right now*, not a full history.
+  for (i = 0; i < (sizeof(phases) / sizeof(phases[0])); i ++)
+  {
+    snprintf(reason, sizeof(reason), "new-firmware-%s-in-progress", phases[i]);
+    remove_fw_reason(printer, reason);
+    snprintf(reason, sizeof(reason), "new-firmware-%s-success", phases[i]);
+    remove_fw_reason(printer, reason);
+    snprintf(reason, sizeof(reason), "new-firmware-%s-failure", phases[i]);
+    remove_fw_reason(printer, reason);
+  }
+  remove_fw_reason(printer, "new-firmware-recovery-in-progress");
+  remove_fw_reason(printer, "new-firmware-recovery-success");
+  remove_fw_reason(printer, "new-firmware-recovery-failure");
+  remove_fw_reason(printer, "firmware-update-success");
+  remove_fw_reason(printer, "firmware-update-failure");
+
+  add_fw_reason(printer, "firmware-update-in-progress");
+
+  cupsRWUnlock(&printer->rwlock);
+
+  // Walk the installation phases. Only the most recently completed phase's
+  // "-success"/"-failure" keyword is left in place once the next phase
+  // starts - fw_reasons[] tracks current status, not a full history.
+  {
+    char prev_reason[64] = "";		// Previous phase's terminal reason
+
+    for (i = 0; i < (sizeof(phases) / sizeof(phases[0])) && !failed; i ++)
+    {
+      snprintf(reason, sizeof(reason), "new-firmware-%s-in-progress", phases[i]);
+
+      cupsRWLockWrite(&printer->rwlock);
+      if (prev_reason[0])
+        remove_fw_reason(printer, prev_reason);
+      add_fw_reason(printer, reason);
+      cupsRWUnlock(&printer->rwlock);
+
+      sleep(2);
+
+      cupsRWLockWrite(&printer->rwlock);
+      remove_fw_reason(printer, reason);
+
+      if (!strcmp(phases[i], printer->fw_fail_phase))
+      {
+        snprintf(prev_reason, sizeof(prev_reason), "new-firmware-%s-failure", phases[i]);
+        failed = true;
+      }
+      else
+      {
+        snprintf(prev_reason, sizeof(prev_reason), "new-firmware-%s-success", phases[i]);
+      }
+      add_fw_reason(printer, prev_reason);
+      cupsRWUnlock(&printer->rwlock);
+    }
+
+    if (failed)
+    {
+      // Recovery: reactivate the previously installed firmware...
+      cupsRWLockWrite(&printer->rwlock);
+      remove_fw_reason(printer, prev_reason);
+      add_fw_reason(printer, "new-firmware-recovery-in-progress");
+      cupsRWUnlock(&printer->rwlock);
+
+      sleep(2);
+
+      cupsRWLockWrite(&printer->rwlock);
+      remove_fw_reason(printer, "new-firmware-recovery-in-progress");
+      add_fw_reason(printer, "new-firmware-recovery-success");
+      cupsRWUnlock(&printer->rwlock);
+    }
+    else
+    {
+      // Overall success - drop the last phase's success keyword in favor of
+      // the "firmware-update-success" keyword added below.
+      cupsRWLockWrite(&printer->rwlock);
+      remove_fw_reason(printer, prev_reason);
+      cupsRWUnlock(&printer->rwlock);
+    }
+  }
+
+  // Restore the printer to service and report the overall result...
+  cupsRWLockWrite(&printer->rwlock);
+
+  printer->state      = IPP_PSTATE_IDLE;
+  printer->state_time = time(NULL);
+
+  {
+    ipp_attribute_t *accepting = ippFindAttribute(printer->attrs, "printer-is-accepting-jobs", IPP_TAG_BOOLEAN);
+
+    if (accepting)
+      ippSetBoolean(printer->attrs, &accepting, 0, true);
+  }
+
+  remove_fw_reason(printer, "firmware-update-in-progress");
+
+  if (failed)
+  {
+    add_fw_reason(printer, "firmware-update-failure");
+  }
+  else
+  {
+    add_fw_reason(printer, "firmware-update-success");
+
+    // Firmware update succeeded - clear the discovered new-firmware record
+    // per IPP FWUPDATE section 5.2.
+    remove_fw_reason(printer, "new-firmware-available");
+    printer->fw_available  = false;
+    printer->fw_check_time = 0;
+    memset(&printer->fw_new, 0, sizeof(printer->fw_new));
+  }
+
+  cupsRWUnlock(&printer->rwlock);
+
+  return (NULL);
 }
 
 
@@ -7194,6 +7857,176 @@ show_supplies(
 }
 
 
+//
+// 'show_firmware()' - Show/change the simulated IPP FWUPDATE state.
+//
+
+static int				// O - 1 on success, 0 on failure
+show_firmware(
+    ippeve_client_t  *client)		// I - Client connection
+{
+  ippeve_printer_t *printer = client->printer;
+					// Printer
+  size_t	num_options = 0;	// Number of form options
+  cups_option_t	*options = NULL;	// Form options
+  char		when[256];		// Human-readable check time
+
+
+  if (!respond_http(client, HTTP_STATUS_OK, NULL, "text/html", 0))
+    return (0);
+
+  html_header(client, printer->name, 0);
+
+  if (printer->web_forms)
+    num_options = parse_options(client, &options);
+
+  if (num_options > 0)
+  {
+    // WARNING: A real printer/server implementation MUST NOT implement
+    // firmware updates via a GET request - GET requests are supposed to be
+    // idempotent (without side-effects) and we obviously are not
+    // authenticating access here.  This form is provided solely to
+    // enable testing and development!
+    const char	*val;			// Form value
+
+    cupsRWLockWrite(&printer->rwlock);
+
+    val = cupsGetOption("available", num_options, options);
+    if (val && (!strcmp(val, "1") || !strcmp(val, "on")))
+    {
+      cupsCopyString(printer->fw_new.string_version, cupsGetOption("version", num_options, options) ? cupsGetOption("version", num_options, options) : "2.0.1", sizeof(printer->fw_new.string_version));
+      cupsCopyString(printer->fw_new.version, printer->fw_new.string_version, sizeof(printer->fw_new.version));
+      cupsCopyString(printer->fw_new.urgency, cupsGetOption("urgency", num_options, options) ? cupsGetOption("urgency", num_options, options) : "feature", sizeof(printer->fw_new.urgency));
+      snprintf(printer->fw_new.name, sizeof(printer->fw_new.name), "%s Firmware", printer->name ? printer->name : "Example");
+      snprintf(printer->fw_new.info_uri, sizeof(printer->fw_new.info_uri), "%s/release-notes.html", printer->fw_repo_uri);
+      printer->fw_new.k_octets = 51200;
+      printer->fw_available    = true;
+      add_fw_reason(printer, "new-firmware-available");
+    }
+    else
+    {
+      memset(&printer->fw_new, 0, sizeof(printer->fw_new));
+      printer->fw_available = false;
+      remove_fw_reason(printer, "new-firmware-available");
+    }
+
+    val = cupsGetOption("fail_phase", num_options, options);
+    cupsCopyString(printer->fw_fail_phase, (val && strcmp(val, "none")) ? val : "", sizeof(printer->fw_fail_phase));
+
+    val = cupsGetOption("unreachable", num_options, options);
+    printer->fw_unreachable = val && (!strcmp(val, "1") || !strcmp(val, "on"));
+    if (!printer->fw_unreachable)
+    {
+      remove_fw_reason(printer, "firmware-repository-unreachable");
+      remove_fw_reason(printer, "firmware-repository-access-error");
+    }
+
+    cupsRWUnlock(&printer->rwlock);
+  }
+
+  cupsRWLockRead(&printer->rwlock);
+
+  if (printer->fw_check_time)
+  {
+    struct tm tm_buf;			// tm buffer for localtime_r use
+
+    strftime(when, sizeof(when), "%c", localtime_r(&printer->fw_check_time, &tm_buf));
+  }
+  else
+    cupsCopyString(when, "Never", sizeof(when));
+
+  html_printf(client, "<h2>IPP Firmware Update Status</h2>\n");
+  html_printf(client, "<table class=\"form\" summary=\"Firmware\">\n");
+  html_printf(client, "<tr><th>Policy:</th><td>%s</td></tr>\n", printer->fw_policy);
+  html_printf(client, "<tr><th>Repository:</th><td>%s</td></tr>\n", printer->fw_repo_uri);
+  html_printf(client, "<tr><th>Last checked:</th><td>%s</td></tr>\n", when);
+  html_printf(client, "<tr><th>New firmware available:</th><td>%s</td></tr>\n", printer->fw_available ? "Yes" : "No");
+  if (printer->fw_available)
+  {
+    html_printf(client, "<tr><th>New version:</th><td>%s (%s)</td></tr>\n", printer->fw_new.string_version, printer->fw_new.urgency);
+    html_printf(client, "<tr><th>New size:</th><td>%d KiB</td></tr>\n", printer->fw_new.k_octets);
+  }
+
+  if (printer->fw_delay_keyword[0])
+    html_printf(client, "<tr><th>Update delayed until:</th><td>%s</td></tr>\n", printer->fw_delay_keyword);
+  else if (printer->fw_delay_time)
+  {
+    struct tm tm_buf;			// tm buffer for localtime_r use
+    char delayed[256];			// Human-readable delay time
+
+    strftime(delayed, sizeof(delayed), "%c", localtime_r(&printer->fw_delay_time, &tm_buf));
+    html_printf(client, "<tr><th>Update delayed until:</th><td>%s</td></tr>\n", delayed);
+  }
+
+  html_printf(client, "<tr><th>Active state-reasons:</th><td>");
+  {
+    size_t i;			// Looping var
+    bool   any = false;	// Any reasons shown yet?
+
+    for (i = 0; i < (sizeof(printer->fw_reasons) / sizeof(printer->fw_reasons[0])); i ++)
+    {
+      if (!printer->fw_reasons[i][0])
+        continue;
+
+      html_printf(client, "%s%s", any ? ", " : "", printer->fw_reasons[i]);
+      any = true;
+    }
+
+    if (!any)
+      html_printf(client, "none");
+  }
+  html_printf(client, "</td></tr>\n</table>\n");
+
+  cupsRWUnlock(&printer->rwlock);
+
+  if (printer->web_forms)
+  {
+    html_printf(client, "<h2>Simulate</h2>\n");
+    html_printf(client, "<form method=\"GET\" action=\"/firmware\">\n");
+    html_printf(client, "<table class=\"form\" summary=\"Simulate Firmware\">\n");
+    html_printf(client, "<tr><th>New firmware available:</th><td><input type=\"checkbox\" name=\"available\" value=\"1\"%s></td></tr>\n", printer->fw_available ? " checked" : "");
+    html_printf(client, "<tr><th>Version:</th><td><input name=\"version\" value=\"%s\"></td></tr>\n", printer->fw_available ? printer->fw_new.string_version : "2.0.1");
+    html_printf(client, "<tr><th>Urgency:</th><td><select name=\"urgency\">");
+    html_printf(client, "<option%s>bugfix</option>", !strcmp(printer->fw_new.urgency, "bugfix") ? " selected" : "");
+    html_printf(client, "<option%s>feature</option>", !printer->fw_new.urgency[0] || !strcmp(printer->fw_new.urgency, "feature") ? " selected" : "");
+    html_printf(client, "<option%s>security</option>", !strcmp(printer->fw_new.urgency, "security") ? " selected" : "");
+    html_printf(client, "</select></td></tr>\n");
+    html_printf(client, "<tr><th>Fail this phase:</th><td><select name=\"fail_phase\">");
+    html_printf(client, "<option%s>none</option>", !printer->fw_fail_phase[0] ? " selected" : "");
+    html_printf(client, "<option%s>acquisition</option>", !strcmp(printer->fw_fail_phase, "acquisition") ? " selected" : "");
+    html_printf(client, "<option%s>validation</option>", !strcmp(printer->fw_fail_phase, "validation") ? " selected" : "");
+    html_printf(client, "<option%s>installation</option>", !strcmp(printer->fw_fail_phase, "installation") ? " selected" : "");
+    html_printf(client, "<option%s>activation</option>", !strcmp(printer->fw_fail_phase, "activation") ? " selected" : "");
+    html_printf(client, "<option%s>cleanup</option>", !strcmp(printer->fw_fail_phase, "cleanup") ? " selected" : "");
+    html_printf(client, "</select></td></tr>\n");
+    html_printf(client, "<tr><th>Repository unreachable:</th><td><input type=\"checkbox\" name=\"unreachable\" value=\"1\"%s></td></tr>\n", printer->fw_unreachable ? " checked" : "");
+    html_printf(client, "<tr><td></td><td colspan=\"2\"><input type=\"submit\" value=\"Update Firmware Simulation\">");
+    if (num_options > 0)
+      html_printf(client, " <span class=\"badge\" id=\"status\">Firmware simulation updated.</span>\n");
+    html_printf(client, "</td></tr>\n</table>\n</form>\n");
+
+    if (num_options > 0)
+      html_printf(client, "<script>\n"
+			  "setTimeout(hide_status, 3000);\n"
+			  "function hide_status() {\n"
+			  "  var status = document.getElementById('status');\n"
+			  "  status.style.display = 'none';\n"
+			  "}\n"
+			  "</script>\n");
+
+    html_printf(client, "<p>Use the IPP <code>Check-For-New-Printer-Firmware</code> and "
+                         "<code>Update-Printer-Firmware</code> operations (or <code>ipptool</code>) "
+                         "to drive the simulation above through IPP instead.</p>\n");
+  }
+
+  cupsFreeOptions(num_options, options);
+
+  html_footer(client);
+
+  return (1);
+}
+
+
 #ifndef _WIN32
 //
 // 'signal_handler()' - Handle termination signals.
@@ -7257,6 +8090,15 @@ usage(FILE *out)			// I - Output file
   cupsLangPuts(out, _("-m MODEL                       Set model name (default=Printer)"));
   cupsLangPuts(out, _("-M MANUFACTURER                Set manufacturer name (default=Test)"));
   cupsLangPuts(out, _("-n HOSTNAME                    Set hostname for printer"));
+  cupsLangPuts(out, _("-o NAME=VALUE                  Set an IPP FWUPDATE simulation option, e.g.:"));
+  cupsLangPuts(out, _("                                  firmware-available=1"));
+  cupsLangPuts(out, _("                                  firmware-fail-phase=PHASE"));
+  cupsLangPuts(out, _("                                  firmware-policy=POLICY"));
+  cupsLangPuts(out, _("                                  firmware-repository-unreachable=1"));
+  cupsLangPuts(out, _("                                  firmware-repository-uri=URI"));
+  cupsLangPuts(out, _("                                  firmware-urgency=KEYWORD"));
+  cupsLangPuts(out, _("                                  firmware-version=VERSION"));
+  cupsLangPuts(out, _("                                (also settable live via the /firmware web page)"));
   cupsLangPuts(out, _("-p PORT                        Set port number for printer"));
   cupsLangPuts(out, _("-r SUBTYPE[,...]               Set DNS-SD service subtype"));
   cupsLangPuts(out, _("-s SPEED[,COLOR-SPEED]         Set speed in pages per minute"));

@@ -6,6 +6,11 @@ v3.0.3 - YYYY-MM-DD
 
 - CVE-2026-NNNNN: The `cupsUTF32toUTF8` function incorrectly treated UTF-32
   values as 64-bit.
+- Added support for the IPP Firmware Update Extensions (FWUPDATE) working
+  draft: the `Check-For-New-Printer-Firmware` and `Update-Printer-Firmware`
+  operations, their associated attributes and `printer-state-reasons`
+  keywords, and a simulated reference implementation in `ippeveprinter`
+  (configurable via new `-o` options and the `/firmware` web page).
 - Now run `ldconfig` on Linux after installing the shared library (Issue #148)
 - Now use dateTime variants of Job attributes.
 - Added Chinese media sizes (Issue #152)

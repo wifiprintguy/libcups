@@ -1,0 +1,184 @@
+#
+# Working Draft - IPP Firmware Update Extensions v1.0 (FWUPDATE)
+#
+# https://ftp.pwg.org/pub/pwg/ipp/wd/wd-ippfwupdate10-20260716.pdf
+#
+# Copyright © 2026 by OpenPrinting.
+#
+# Licensed under Apache License v2.0.  See the file "LICENSE" for more
+# information.
+#
+# Usage:
+#
+#   ./ipptool [OPTIONS] -f FILENAME -t PRINTER-URI ippfwupdate10.test
+#
+# Options:
+#
+#   -d REQUIRE_FWUPDATE=1     Require support for the FWUPDATE specification.
+#   -d SKIP_UPDATE=1          Skip the (slow, disruptive) Update-Printer-Firmware
+#                             tests - useful when just checking attribute
+#                             conformance against a printer you don't want to
+#                             actually reboot/interrupt.
+#
+
+{
+    NAME "IPP FWUPDATE: Printer attributes"
+    OPERATION Get-Printer-Attributes
+
+    GROUP operation-attributes-tag
+    ATTR charset attributes-charset utf-8
+    ATTR naturalLanguage attributes-natural-language en
+    ATTR uri printer-uri $uri
+    ATTR keyword requested-attributes all
+
+    STATUS successful-ok
+
+    EXPECT ?ipp-features-supported IN-GROUP printer-attributes-tag OF-TYPE keyword
+    EXPECT ipp-features-supported WITH-VALUE "fwupdate" DEFINE-MATCH PRINTER_HAS_FWUPDATE
+    EXPECT ipp-features-supported IF-DEFINED "REQUIRE_FWUPDATE"
+
+    EXPECT operations-supported WITH-VALUE 0x006b DEFINE-MATCH PRINTER_HAS_CHECK_FOR_NEW_PRINTER_FIRMWARE
+    EXPECT operations-supported WITH-VALUE 0x006b IF-DEFINED "PRINTER_HAS_FWUPDATE,REQUIRE_FWUPDATE"
+    EXPECT operations-supported WITH-VALUE 0x006c DEFINE-MATCH PRINTER_HAS_UPDATE_PRINTER_FIRMWARE
+    EXPECT operations-supported WITH-VALUE 0x006c IF-DEFINED "PRINTER_HAS_FWUPDATE,REQUIRE_FWUPDATE"
+
+    # Printer Description attributes (section 6.1-6.2)
+    EXPECT ?delay-update-until-supported IN-GROUP printer-attributes-tag OF-TYPE keyword
+    EXPECT delay-update-until-supported IF-DEFINED "PRINTER_HAS_FWUPDATE,REQUIRE_FWUPDATE"
+
+    EXPECT ?printer-new-firmware-policy-configured IN-GROUP printer-attributes-tag OF-TYPE keyword COUNT 1
+    EXPECT printer-new-firmware-policy-configured WITH-VALUE-FROM printer-new-firmware-policy-supported
+    EXPECT printer-new-firmware-policy-configured IF-DEFINED "PRINTER_HAS_FWUPDATE,REQUIRE_FWUPDATE"
+
+    EXPECT ?printer-new-firmware-policy-supported IN-GROUP printer-attributes-tag OF-TYPE keyword
+    EXPECT printer-new-firmware-policy-supported IF-DEFINED "PRINTER_HAS_FWUPDATE,REQUIRE_FWUPDATE"
+
+    EXPECT ?printer-firmware-repository-uri-configured IN-GROUP printer-attributes-tag OF-TYPE uri COUNT 1
+    EXPECT printer-firmware-repository-uri-configured DEFINE-MATCH PRINTER_HAS_FIRMWARE_REPOSITORY
+
+    EXPECT ?printer-firmware-repository-uri-supported IN-GROUP printer-attributes-tag OF-TYPE uri
+    EXPECT printer-firmware-repository-uri-supported IF-DEFINED "PRINTER_HAS_FIRMWARE_REPOSITORY"
+
+    EXPECT printer-firmware-info-uri IN-GROUP printer-attributes-tag OF-TYPE uri COUNT 1
+    EXPECT printer-firmware-info-uri IF-DEFINED "PRINTER_HAS_FWUPDATE,REQUIRE_FWUPDATE"
+
+    # Printer Status attributes (section 6.3) - always REQUIRED to be
+    # returned (with out-of-band values when there's nothing to report yet),
+    # so these are unconditional once we know the printer supports FWUPDATE.
+    EXPECT printer-new-firmware-check-date-time IN-GROUP printer-attributes-tag OF-TYPE dateTime|no-value|unknown COUNT 1
+    EXPECT printer-new-firmware-check-date-time IF-DEFINED "PRINTER_HAS_FWUPDATE,REQUIRE_FWUPDATE"
+
+    EXPECT printer-new-firmware-info-uri IN-GROUP printer-attributes-tag OF-TYPE uri|no-value|unknown COUNT 1
+    EXPECT printer-new-firmware-info-uri IF-DEFINED "PRINTER_HAS_FWUPDATE,REQUIRE_FWUPDATE"
+
+    EXPECT printer-new-firmware-k-octets IN-GROUP printer-attributes-tag OF-TYPE integer(1:MAX)|no-value|unknown
+    EXPECT printer-new-firmware-k-octets IF-DEFINED "PRINTER_HAS_FWUPDATE,REQUIRE_FWUPDATE"
+
+    EXPECT printer-new-firmware-name IN-GROUP printer-attributes-tag OF-TYPE name|no-value|unknown
+    EXPECT printer-new-firmware-name IF-DEFINED "PRINTER_HAS_FWUPDATE,REQUIRE_FWUPDATE"
+
+    EXPECT printer-new-firmware-patches IN-GROUP printer-attributes-tag OF-TYPE text|no-value|unknown
+    EXPECT printer-new-firmware-patches IF-DEFINED "PRINTER_HAS_FWUPDATE,REQUIRE_FWUPDATE"
+
+    EXPECT printer-new-firmware-string-version IN-GROUP printer-attributes-tag OF-TYPE text|no-value|unknown
+    EXPECT printer-new-firmware-string-version IF-DEFINED "PRINTER_HAS_FWUPDATE,REQUIRE_FWUPDATE"
+
+    EXPECT printer-new-firmware-urgency IN-GROUP printer-attributes-tag OF-TYPE keyword|no-value|unknown COUNT 1
+    EXPECT printer-new-firmware-urgency IF-DEFINED "PRINTER_HAS_FWUPDATE,REQUIRE_FWUPDATE"
+
+    EXPECT printer-new-firmware-version IN-GROUP printer-attributes-tag OF-TYPE octetString|no-value|unknown
+    EXPECT printer-new-firmware-version IF-DEFINED "PRINTER_HAS_FWUPDATE,REQUIRE_FWUPDATE"
+}
+
+{
+    NAME "IPP FWUPDATE: Check-For-New-Printer-Firmware"
+    OPERATION Check-For-New-Printer-Firmware
+    SKIP-IF-NOT-DEFINED PRINTER_HAS_CHECK_FOR_NEW_PRINTER_FIRMWARE
+
+    GROUP operation-attributes-tag
+    ATTR charset attributes-charset utf-8
+    ATTR naturalLanguage attributes-natural-language en
+    ATTR uri printer-uri $uri
+
+    STATUS successful-ok
+
+    # All Group 2 attributes here are OPTIONAL (section 5.1.2) - just check
+    # the types of whichever ones the Printer chose to include.
+    EXPECT ?printer-new-firmware-check-date-time OF-TYPE dateTime
+    EXPECT ?printer-new-firmware-info-uri OF-TYPE uri
+    EXPECT ?printer-new-firmware-k-octets OF-TYPE integer(1:MAX)
+    EXPECT ?printer-new-firmware-urgency OF-TYPE keyword
+    EXPECT ?printer-new-firmware-string-version OF-TYPE text
+}
+
+{
+    NAME "IPP FWUPDATE: Printer reports check-date-time after Check-For-New-Printer-Firmware"
+    OPERATION Get-Printer-Attributes
+    SKIP-IF-NOT-DEFINED PRINTER_HAS_CHECK_FOR_NEW_PRINTER_FIRMWARE
+
+    GROUP operation-attributes-tag
+    ATTR charset attributes-charset utf-8
+    ATTR naturalLanguage attributes-natural-language en
+    ATTR uri printer-uri $uri
+    ATTR keyword requested-attributes printer-new-firmware-check-date-time,printer-state-reasons
+
+    STATUS successful-ok
+
+    EXPECT printer-new-firmware-check-date-time OF-TYPE dateTime
+    DISPLAY printer-state-reasons
+}
+
+{
+    NAME "IPP FWUPDATE: Update-Printer-Firmware rejects conflicting delay attributes"
+    OPERATION Update-Printer-Firmware
+    SKIP-IF-NOT-DEFINED PRINTER_HAS_UPDATE_PRINTER_FIRMWARE
+
+    GROUP operation-attributes-tag
+    ATTR charset attributes-charset utf-8
+    ATTR naturalLanguage attributes-natural-language en
+    ATTR uri printer-uri $uri
+    ATTR keyword delay-update-until no-delay
+    ATTR dateTime delay-update-until-date-time 2030-01-01T00:00:00Z
+
+    STATUS client-error-conflicting-attributes
+}
+
+{
+    NAME "IPP FWUPDATE: Update-Printer-Firmware installs available firmware now"
+    OPERATION Update-Printer-Firmware
+    SKIP-IF-NOT-DEFINED PRINTER_HAS_UPDATE_PRINTER_FIRMWARE
+    SKIP-IF-DEFINED SKIP_UPDATE
+
+    GROUP operation-attributes-tag
+    ATTR charset attributes-charset utf-8
+    ATTR naturalLanguage attributes-natural-language en
+    ATTR uri printer-uri $uri
+    ATTR keyword delay-update-until no-delay
+
+    # This request returns immediately per section 5.2, before the Printer
+    # has even started the Acquisition/Validation/Installation/Activation/
+    # Cleanup (or Recovery) phases - the next test polls for completion.
+    STATUS successful-ok
+}
+
+{
+    NAME "IPP FWUPDATE: firmware update reaches a terminal state"
+    OPERATION Get-Printer-Attributes
+    SKIP-IF-NOT-DEFINED PRINTER_HAS_UPDATE_PRINTER_FIRMWARE
+    SKIP-IF-DEFINED SKIP_UPDATE
+    DELAY 2
+
+    GROUP operation-attributes-tag
+    ATTR charset attributes-charset utf-8
+    ATTR naturalLanguage attributes-natural-language en
+    ATTR uri printer-uri $uri
+    ATTR keyword requested-attributes printer-state,printer-state-reasons,printer-is-accepting-jobs
+
+    STATUS successful-ok
+
+    # Keep polling every 1-2 seconds while the update is still running; once
+    # "firmware-update-in-progress" is gone (success or failure, either is a
+    # valid outcome for this generic conformance check), it's done.
+    EXPECT printer-state-reasons WITH-VALUE "firmware-update-in-progress" REPEAT-MATCH REPEAT-LIMIT 30
+    EXPECT printer-is-accepting-jobs WITH-VALUE true
+}

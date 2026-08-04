@@ -284,6 +284,8 @@ typedef enum ipp_op_e			// IPP operations
 					// Acknowledge-Encrypted-Job-Attributes: Acknowledge receipt of encrypted job attributes
   IPP_OP_FETCH_ENCRYPTED_JOB_ATTRIBUTES,// Fetch-Encrypted-Job-Attributes: Download encrypted job attributes
   IPP_OP_GET_ENCRYPTED_JOB_ATTRIBUTES,	// Get-Encrypted-Job-Attributes: Query job attributes and return in an encrypted form
+  IPP_OP_CHECK_FOR_NEW_PRINTER_FIRMWARE,// Check-For-New-Printer-Firmware: Check the firmware repository for new firmware
+  IPP_OP_UPDATE_PRINTER_FIRMWARE,	// Update-Printer-Firmware: Install new firmware if available
 
   IPP_OP_PRIVATE = 0x4000,		// Reserved @private@
   IPP_OP_CUPS_GET_DEFAULT,		// CUPS-Get-Default: Get the default printer
