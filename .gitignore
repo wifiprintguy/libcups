@@ -69,3 +69,4 @@
 /xcode/libcups.xcodeproj/project.xcworkspace/
 /xcode/libcups.xcodeproj/xcuserdata/
 *.patch
+xcode/.derived*

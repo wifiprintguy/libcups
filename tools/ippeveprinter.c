@@ -2179,6 +2179,19 @@ create_printer(
   ippAddString(printer->attrs, IPP_TAG_PRINTER, IPP_TAG_URI, "printer-firmware-repository-uri-supported", NULL, printer->fw_repo_uri);
   ippAddString(printer->attrs, IPP_TAG_PRINTER, IPP_TAG_URI, "printer-firmware-info-uri", NULL, printer->fw_info_uri);
 
+  // PWG 5100.13 (NODRIVER) attributes describing the currently installed
+  // Firmware - now REQUIRED by IPP FWUPDATE in addition to NODRIVER.
+  // Note: not IPP_CONST_TAG - these three get overwritten in place (via
+  // ippSetString()) after a successful Update-Printer-Firmware, and
+  // ippSetString() on an IPP_TAG_CUPS_CONST-flagged attribute stores the
+  // caller's pointer directly instead of copying it, which would leave the
+  // attribute aliasing printer->fw_new's fields right before they're
+  // memset() back to zero.
+  ippAddString(printer->attrs, IPP_TAG_PRINTER, IPP_TAG_NAME, "printer-firmware-name", NULL, "System Firmware");
+  ippAddString(printer->attrs, IPP_TAG_PRINTER, IPP_TAG_TEXT, "printer-firmware-patches", NULL, "");
+  ippAddString(printer->attrs, IPP_TAG_PRINTER, IPP_TAG_TEXT, "printer-firmware-string-version", NULL, LIBCUPS_VERSION);
+  ippAddOctetString(printer->attrs, IPP_TAG_PRINTER, "printer-firmware-version", LIBCUPS_VERSION, (int)strlen(LIBCUPS_VERSION));
+
   if (has_pdf)
   {
     // document-password-supported
@@ -6237,6 +6250,21 @@ process_firmware_update(
   else
   {
     add_fw_reason(printer, "firmware-update-success");
+
+    // Promote the newly installed Firmware's info into the PWG 5100.13
+    // "currently installed Firmware" attributes...
+    {
+      ipp_attribute_t *attr;
+
+      if ((attr = ippFindAttribute(printer->attrs, "printer-firmware-name", IPP_TAG_NAME)) != NULL)
+        ippSetString(printer->attrs, &attr, 0, printer->fw_new.name);
+      if ((attr = ippFindAttribute(printer->attrs, "printer-firmware-patches", IPP_TAG_TEXT)) != NULL)
+        ippSetString(printer->attrs, &attr, 0, printer->fw_new.patches);
+      if ((attr = ippFindAttribute(printer->attrs, "printer-firmware-string-version", IPP_TAG_TEXT)) != NULL)
+        ippSetString(printer->attrs, &attr, 0, printer->fw_new.string_version);
+      if ((attr = ippFindAttribute(printer->attrs, "printer-firmware-version", IPP_TAG_STRING)) != NULL)
+        ippSetOctetString(printer->attrs, &attr, 0, printer->fw_new.version, strlen(printer->fw_new.version));
+    }
 
     // Firmware update succeeded - clear the discovered new-firmware record
     // per IPP FWUPDATE section 5.2.
