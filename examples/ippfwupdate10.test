@@ -263,8 +263,8 @@
     SKIP-IF-NOT-DEFINED PRINTER_HAS_UPDATE_PRINTER_FIRMWARE
     SKIP-IF-NOT-DEFINED NEW_FIRMWARE_AVAILABLE
     SKIP-IF-DEFINED SKIP_UPDATE
-    #DELAY 2,2
-    DELAY 2
+    # Wrap value for DELAY in quotes to get a comma separated value past the parser...
+    DELAY "0,2"
 
     GROUP 'operation-attributes-tag'
     ATTR charset "attributes-charset" utf-8
