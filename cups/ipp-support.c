@@ -1743,6 +1743,8 @@ ippCreateRequestedArray(ipp_t *request)	// I - IPP request
     "printer-firmware-repository-uri-supported",
 					// IPP FWUPDATE
     "printer-firmware-string-version",	// PWG 5110.1
+    "printer-firmware-update-date-time",
+					// IPP FWUPDATE
     "printer-firmware-version",		// PWG 5110.1
     "printer-geo-location",
     "printer-get-attributes-supported",
@@ -1773,6 +1775,8 @@ ippCreateRequestedArray(ipp_t *request)	// I - IPP request
     "printer-new-firmware-info-uri",	// IPP FWUPDATE
     "printer-new-firmware-k-octets",	// IPP FWUPDATE
     "printer-new-firmware-name",	// IPP FWUPDATE
+    "printer-new-firmware-offline-time",
+					// IPP FWUPDATE
     "printer-new-firmware-patches",	// IPP FWUPDATE
     "printer-new-firmware-policy-configured",
 					// IPP FWUPDATE
